@@ -54,30 +54,29 @@ def add_furigana(text):
             result.append(surface)
             continue
 
-        # 遍历所有汉字/片假名块，每块分别注解
-        pos = 0
+        # 逐字处理：假名在读音中按序一一匹配，汉字取中间的剩余读音
+        reading_pos = 0
+        kanji_buf = ""
         token_parts = []
-        while pos < len(surface):
-            if needs_furigana(surface[pos]):
-                block_start = pos
-                while pos < len(surface) and needs_furigana(surface[pos]):
-                    pos += 1
-                lead = surface[block_start:pos]
 
-                rest_start = pos
-                while pos < len(surface) and not needs_furigana(surface[pos]):
-                    pos += 1
-                rest = surface[rest_start:pos]
-
-                if not rest and pos == len(surface):
-                    lead_hira = hira[block_start:]
-                else:
-                    lead_hira = hira[block_start:block_start + len(lead)]
-
-                token_parts.append(f"{{{lead}|{lead_hira}}}{rest}")
+        for ch in surface:
+            if needs_furigana(ch):
+                kanji_buf += ch
             else:
-                token_parts.append(surface[pos])
-                pos += 1
+                if kanji_buf:
+                    # 在剩余读音中找到当前假名的位置
+                    kana_match = hira.find(ch, reading_pos)
+                    if kana_match > reading_pos:
+                        kanji_reading = hira[reading_pos:kana_match]
+                        token_parts.append(f"{{{kanji_buf}|{kanji_reading}}}")
+                    kanji_buf = ""
+                    reading_pos = kana_match if kana_match >= 0 else reading_pos
+                token_parts.append(ch)
+                reading_pos += 1
+
+        if kanji_buf:
+            kanji_reading = hira[reading_pos:]
+            token_parts.append(f"{{{kanji_buf}|{kanji_reading}}}")
 
         result.append(''.join(token_parts))
 
@@ -86,7 +85,64 @@ def add_furigana(text):
 # ===================== 测试 =====================
 if __name__ == '__main__':
     lyric = """
-こうして夏の終わりは
-夢の世に淡く儚く色づき 消える
+ひとり電車に　揺られて
+
+お気に入りだった　海へ来ていた
+
+肩寄せながら　波音
+
+いつまでも　ふたりきいたよね
+
+なみだ味の風は
+
+私を切なくさせる
+
+波の数ほど
+
+思い出は溢れてくるけれど
+
+あなたの笑顔
+
+今はもう　思い出せない
+
+傾いてゆく　太陽
+
+暖かくすべて包み込んでく
+
+目が覚めるような　オレンジ
+
+この冬の　終わりが近づいてる
+
+打ち寄せられた空き缶さえも
+
+意味があるはず
+
+言葉一つで
+
+大切な人を傷つけてた
+
+子供のような
+
+恋はもうしたくないの
+
+寄せては返す波のように
+
+心強くなろう
+
+なみだ味する風を今
+
+思い切り吸い込んで帰ろう
+
+波の数ほど
+
+思い出は溢れてくるけれど
+
+あなたの笑顔
+
+今はもう　思い出せない
+
+思い出せない
+
+
 """
     print(add_furigana(lyric))
