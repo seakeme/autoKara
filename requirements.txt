@@ -1,0 +1,36 @@
+# ============================================================
+# 注意: PyTorch / torchaudio 需要根据你的 CUDA 版本安装
+# 安装前先确认 CUDA 版本 (nvcc --version 或 nvidia-smi)
+# 然后用对应 index 安装:
+#
+#   CUDA 12.x:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+#
+#   CUDA 11.8:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu118
+#
+#   CPU only:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#
+# 之后再安装其余依赖:
+#   pip install -r requirements.txt
+# ============================================================
+
+# --- 核心管线 ---
+librosa>=0.11.0
+numpy>=1.24.0
+
+# --- 强制对齐 + 人声分离 (需先手动安装对应 CUDA 版本的 torch) ---
+# torch>=2.8.0
+# torchaudio>=2.8.0
+demucs>=4.0.0
+
+# --- 日语歌词处理 ---
+Janome>=0.5.0
+nltk>=3.8.0
+pykakasi>=2.3.0
+pyphen>=0.17.0
+SudachiPy>=0.6.0
+
+# --- GUI ---
+Pillow>=9.0.0
