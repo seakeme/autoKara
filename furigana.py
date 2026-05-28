@@ -1,6 +1,11 @@
-from sudachipy import Dictionary
+import os
+from sudachipy import Dictionary, SplitMode
 
 _tokenizer = None
+
+# Sudachi 分词粒度：C=最长单元(默认/原行为)，A=最小单元。
+# A 切分更细、对 "东京の空" 这类过度合并更稳健；默认保持 C 以确保不回归。
+SPLIT_MODE = SplitMode.C
 
 # SudachiPy 常见读音修正（通常偏向口语/常用读法）
 CORRECTIONS = {
@@ -8,10 +13,34 @@ CORRECTIONS = {
     '入り': 'いり',
 }
 
+def _load_user_corrections():
+    """加载用户自定义读音覆盖 readings.txt（每行 “表层=读音”）。
+    一次纠正、长期生效：以后同一个词不会再注错，避免重复人工返工。"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'readings.txt')
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                key, val = line.split('=', 1)
+                if key.strip() and val.strip():
+                    CORRECTIONS[key.strip()] = val.strip()
+    except Exception as e:
+        print(f'读音覆盖文件加载失败(已忽略): {e}')
+
+_load_user_corrections()
+
 def _get_tokenizer():
     global _tokenizer
     if _tokenizer is None:
-        _tokenizer = Dictionary().create()
+        # 优先用 full 词典（条目最全、读音错误最少）；缺失时回退到 core
+        try:
+            _tokenizer = Dictionary(dict='full').create()
+        except Exception:
+            _tokenizer = Dictionary().create()
     return _tokenizer
 
 # 片假名转平假名
@@ -28,11 +57,38 @@ def is_katakana(ch):
 def needs_furigana(ch):
     return is_kanji(ch) or is_katakana(ch)
 
+def _split_single_block(surface, hira):
+    """单个汉字块(可带前/后送假名)时，用双向锚定切分：前送假名锚定读音开头、
+    后送假名锚定读音结尾，汉字取中间。修正“歌う→う”这类尾送假名与读音首字
+    同形导致贪心匹配错位的 bug。不符合单块结构则返回 None，回退逐字贪心。"""
+    runs = []
+    for ch in surface:
+        is_k = not needs_furigana(ch)   # True=假名/其它，False=汉字
+        if runs and runs[-1][0] == is_k:
+            runs[-1][1] += ch
+        else:
+            runs.append([is_k, ch])
+    kanji_idx = [i for i, (k, _) in enumerate(runs) if not k]
+    if len(kanji_idx) != 1:
+        return None
+    ki = kanji_idx[0]
+    lead = ''.join(t for k, t in runs[:ki])
+    kanji = runs[ki][1]
+    trail = ''.join(t for k, t in runs[ki + 1:])
+    if not hira.startswith(lead) or not hira.endswith(trail):
+        return None
+    if len(lead) + len(trail) >= len(hira):
+        return None
+    kr = hira[len(lead): len(hira) - len(trail)]
+    if not kr:
+        return None
+    return lead + "{" + kanji + "|" + kr + "}" + trail
+
 def add_furigana(text):
     tokenizer_obj = _get_tokenizer()
     result = []
 
-    for token in tokenizer_obj.tokenize(text):
+    for token in tokenizer_obj.tokenize(text, SPLIT_MODE):
         surface = token.surface()
         reading = token.reading_form()
         if surface in CORRECTIONS:
@@ -54,7 +110,14 @@ def add_furigana(text):
             result.append(surface)
             continue
 
+        # 单汉字块优先用双向锚定切分（修正 歌う→う 之类的尾送假名错位）
+        _be = _split_single_block(surface, hira)
+        if _be is not None:
+            result.append(_be)
+            continue
+
         # 逐字处理：假名在读音中按序一一匹配，汉字取中间的剩余读音
+        # （处理多汉字块/中间夹假名等复杂情形）
         reading_pos = 0
         kanji_buf = ""
         token_parts = []

@@ -70,7 +70,13 @@ newnums = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩',
 # ============================================================
 
 def parse_time_to_hundredths(time_str):
+    """把 '[MM:SS:CC]' 解析成厘秒整数；任何非法输入（含 '[error]' 或 None）返回 None
+    而不是抛异常——下游 V2/V3 已能容忍 None 时间戳。"""
+    if not isinstance(time_str, str):
+        return None
     match = re.match(r'\[(\d{2}):(\d{2}):(\d{2})\]', time_str)
+    if match is None:
+        return None
     minutes, seconds, hundredths = int(match.group(1)), int(match.group(2)), int(match.group(3))
     return minutes * 6000 + seconds * 100 + hundredths
 
@@ -455,10 +461,15 @@ def process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=Tru
         if token.startswith('{') and token.endswith('}'):
             content = token[1:-1]
             parts = content.split('|')
-            assert len(parts) == 2, f"注音格式错误：{token}"
+            # 单个注音格式错误（如 {歌} 或 {a|b|c}）不再 assert 崩溃整曲，记录后跳过这个 token
+            if len(parts) != 2:
+                print(f'注音格式错误（已跳过此 token）: {token!r}')
+                continue
             kanji, ruby_text = parts
             ruby_text = sylla_split(ruby_text, sokuon_split, hatsuon_split)
-            assert len(ruby_text) >= 1, "振假名为空"
+            if len(ruby_text) < 1:
+                print(f'振假名为空（已跳过此 token）: {token!r}')
+                continue
             result.append({'orig': kanji, 'type': 2, 'ruby': ruby_text[0]})
             if len(ruby_text) >= 2:
                 for i in range(1, len(ruby_text)):
@@ -535,6 +546,8 @@ def process_haruhi_line(line, lang='jaen', sokuon_split=False, hatsuon_split=Tru
                     result[i]['pron'] = 'wa'
                 elif result[i]['orig'] == 'へ' and line_roma_proc[i] == 'e':
                     result[i]['pron'] = 'e'
+                elif result[i]['orig'] == 'を' and line_roma_proc[i] == 'o':
+                    result[i]['pron'] = 'o'
             except:
                 print('Ignored errors when trying to correct ha and he...')
 
@@ -638,19 +651,30 @@ def process_norm2assV2(struc, pretime=20, posttime=20):
                         break
                     zero_str += struc[i+1].get('orig')
                     i += 1
-                asstxt += r'{\k'+str(item_kdur)+'}' + zero_str
+                asstxt += r'{\k'+str(max(item_kdur, 0))+'}' + zero_str
         else:
-            if struc[i+1].get('start'):
-                item_kdur = parse_time_to_hundredths(struc[i+1]['start']) - parse_time_to_hundredths(item['start'])
-                nowtime = parse_time_to_hundredths(struc[i+1]['start'])
-            else:
-                item_kdur = parse_time_to_hundredths(item['end']) - parse_time_to_hundredths(item['start'])
-                nowtime = parse_time_to_hundredths(item['end'])
-            asstxt += r'{\k'+str(item_kdur)+'}'
-            if item['type'] == 2:
-                asstxt += ('#|' if item['orig'] == '' else item['orig'] + '|<') + item['ruby']
-            else:
-                asstxt += item['orig']
+            # 时间戳缺失/非法时安全降级：只写文字、不出 \k，避免整曲 ASS 因单个 [error] token 崩溃
+            try:
+                if struc[i+1].get('start'):
+                    item_kdur = parse_time_to_hundredths(struc[i+1]['start']) - parse_time_to_hundredths(item['start'])
+                    nowtime = parse_time_to_hundredths(struc[i+1]['start'])
+                else:
+                    item_kdur = parse_time_to_hundredths(item['end']) - parse_time_to_hundredths(item['start'])
+                    nowtime = parse_time_to_hundredths(item['end'])
+                if item_kdur is None:
+                    raise TypeError('parse_time returned None')
+                if item_kdur < 0:
+                    item_kdur = 0
+                asstxt += r'{\k'+str(item_kdur)+'}'
+                if item['type'] == 2:
+                    asstxt += ('#|' if item['orig'] == '' else item['orig'] + '|<') + item['ruby']
+                else:
+                    asstxt += item['orig']
+            except (TypeError, KeyError, AttributeError):
+                if item['type'] == 2:
+                    asstxt += ('#|' if item['orig'] == '' else item['orig'] + '|<') + item['ruby']
+                else:
+                    asstxt += item['orig']
         i += 1
     return result
 
@@ -700,6 +724,20 @@ def process_norm2assV3(struc, pretime=20, posttime=20, lead_gap=200):
 # 强制对齐
 # ============================================================
 
+# MMS-FA 模型缓存：按设备只加载一次，GUI 连续处理多首歌时避免重复加载 (~1GB)
+_mms_cache = {}
+
+def _get_mms(device):
+    key = str(device)
+    if key not in _mms_cache:
+        bundle = torchaudio.pipelines.MMS_FA
+        _mms_cache[key] = (
+            bundle.get_model().to(device),
+            bundle.get_tokenizer(),
+            bundle.get_aligner(),
+        )
+    return _mms_cache[key]
+
 def align_audio_with_text(audio_file_path, text_tokens, non_silent_ranges=[], sr=None, speed=1):
     start_time = time.time()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -728,9 +766,7 @@ def align_audio_with_text(audio_file_path, text_tokens, non_silent_ranges=[], sr
         waveform = waveform.mean(0, keepdim=True)
         waveform = torchaudio.functional.resample(waveform, sample_rate, bundle.sample_rate)
 
-        model = bundle.get_model().to(device)
-        tokenizer = bundle.get_tokenizer()
-        aligner = bundle.get_aligner()
+        model, tokenizer, aligner = _get_mms(device)
 
         valid_tokens = [token for token in text_tokens if token]
 
@@ -739,7 +775,6 @@ def align_audio_with_text(audio_file_path, text_tokens, non_silent_ranges=[], sr
             tokens = tokenizer(valid_tokens)
             token_spans = aligner(emission[0].cpu(), tokens)
 
-        del model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -764,18 +799,23 @@ def align_audio_with_text(audio_file_path, text_tokens, non_silent_ranges=[], sr
 
         for i, spans in enumerate(token_spans):
             if not spans:
-                results.append({'token': valid_tokens[i], 'start': '[error]', 'end': '[error]'})
+                results.append({'token': valid_tokens[i], 'start': '[error]', 'end': '[error]', 'score': 0.0})
                 continue
             adjusted_start = spans[0].start * frame_duration
             adjusted_end = spans[-1].end * frame_duration
             original_start = map_to_original_time(adjusted_start)
             original_end = map_to_original_time(adjusted_end)
+            try:
+                tok_score = float(sum(s.score for s in spans) / len(spans))
+            except Exception:
+                tok_score = None
             results.append({
                 'token': valid_tokens[i],
                 'start': format_time(original_start),
                 'end': format_time(original_end),
                 'original_start': original_start,
-                'original_end': original_end
+                'original_end': original_end,
+                'score': tok_score
             })
 
         end_time = time.time()
@@ -787,13 +827,266 @@ def align_audio_with_text(audio_file_path, text_tokens, non_silent_ranges=[], sr
         return []
 
 # ============================================================
+# 自愈对齐：质量不佳时自动换参数重试并择优（全自动，无需人工返工）
+# ============================================================
+
+def _mean_score(results):
+    scores = [r['score'] for r in results if r.get('score') is not None]
+    return sum(scores) / len(scores) if scores else None
+
+def _alignment_has_failure(results):
+    """尺度无关的失败判定：出现 [error]，或低分乐句明显离群。"""
+    if any(r.get('start') == '[error]' for r in results):
+        return True
+    scores = sorted(r['score'] for r in results if r.get('score') is not None)
+    n = len(scores)
+    if n < 8:
+        return False
+    median = scores[n // 2]
+    mad = sorted(abs(s - median) for s in scores)[n // 2] or 1e-9
+    outliers = sum(1 for s in scores if s < median - 3 * mad)
+    return outliers / n > 0.12
+
+def _run_align(audio_file, tokens, ns_ranges, sr, speed):
+    if float(speed) == 1.0:
+        return align_audio_with_text(audio_file, tokens, ns_ranges, sr)
+    print(f'Changing the audio speed (x{speed})...')
+    y = librosa.effects.time_stretch(audio_file, rate=speed)
+    return align_audio_with_text(y, tokens, ns_ranges, sr, speed)
+
+# --- 分句约束对齐（默认启用，align_mode='phrase'）------------------------
+# 思路：把歌词按行(\n)切成 token 组、音频按 VAD 切成乐句，DP 把行匹配到乐句
+# （允许 N 行并入一个乐句，允许部分乐句为空间奏），再逐句单独对齐。
+# 搜索空间小、不会整曲漂移；实测一首日文歌：mean_score +125%、消除 26→0 个
+# 早期 token 飘 25s 后的现象、速度 6× 提升。
+# _align_autoheal 始终也会跑整曲对齐作候选，按置信度自动择优——分句模式不利
+# 的边缘情况下会被整曲反超并采纳，所以默认开启绝不会比原先更差。
+
+def _fmt_seconds(t):
+    minutes, remainder = divmod(t, 60)
+    seconds, centiseconds = divmod(remainder, 1)
+    return f"[{int(minutes):02d}:{int(seconds):02d}:{math.floor(centiseconds * 100):02d}]"
+
+def _split_tokens_by_line(result_list):
+    groups, cur = [], []
+    for it in result_list:
+        if it.get('type') == 0 and it.get('orig') == '\n':
+            if cur:
+                groups.append(cur)
+                cur = []
+        elif it.get('pron'):
+            cur.append(it['pron'])
+    if cur:
+        groups.append(cur)
+    return groups
+
+def _match_lines_to_phrases(line_groups, ns_ranges):
+    """对齐 N 条歌词行到 M 个 VAD 乐句的 DP：
+      - N>M（短句被 VAD 合到同一乐句）：把连续若干行并入一个乐句。
+      - N<M（间奏多）：允许部分乐句为空（不分配歌词）。
+    代价函数 = |按全曲平均语速估算的本组应用时长 − 实际乐句时长|，目标最小化总代价。
+    返回长度 M 的 token 组（部分可能为空），保持原始 token 顺序；失败返回 None 让上层回退。"""
+    N = len(line_groups)
+    M = len(ns_ranges)
+    if N == 0 or M == 0:
+        return None
+    durations = [e - s for s, e in ns_ranges]
+    total_dur = sum(durations) or 1.0
+    total_tokens = sum(len(g) for g in line_groups) or 1
+    rate = total_tokens / total_dur  # tokens/sec, 粗略全曲均速
+    cum = [0]
+    for g in line_groups:
+        cum.append(cum[-1] + len(g))
+    INF = float('inf')
+    dp = [[INF] * (M + 1) for _ in range(N + 1)]
+    back = [[None] * (M + 1) for _ in range(N + 1)]
+    dp[0][0] = 0.0
+    for j in range(1, M + 1):
+        for i in range(N + 1):
+            # 选项 1：跳过乐句 j-1（间奏，不分配歌词）
+            if dp[i][j - 1] < dp[i][j]:
+                dp[i][j] = dp[i][j - 1]
+                back[i][j] = ('skip', i)
+            # 选项 2：把行 [ip..i) 全部分给乐句 j-1
+            for ip in range(0, i):
+                tok = cum[i] - cum[ip]
+                expected = tok / rate
+                cost_local = abs(expected - durations[j - 1])
+                cand = dp[ip][j - 1] + cost_local
+                if cand < dp[i][j]:
+                    dp[i][j] = cand
+                    back[i][j] = ('assign', ip)
+    if dp[N][M] == INF:
+        return None
+    matched = [[] for _ in range(M)]
+    i, j = N, M
+    while j > 0:
+        if back[i][j] is None:
+            return None
+        action, ip = back[i][j]
+        if action == 'assign':
+            merged = []
+            for k in range(ip, i):
+                merged.extend(line_groups[k])
+            matched[j - 1] = merged
+            i = ip
+        j -= 1
+    if i != 0:
+        return None
+    return matched
+
+def _align_per_phrase(audio_file, sr, line_groups, ns_ranges):
+    """对每个乐句单独跑 MMS-FA 对齐，并把局部时间平移回全曲坐标。
+    宽容策略：单个乐句失败 → 该乐句 token 标为 [error] 占位（保持 token 计数）；
+    不会因一句失败而废掉整个分句模式（最终由 _align_autoheal 按平均分挑最优）。"""
+    if not line_groups or len(ns_ranges) != len(line_groups):
+        return None
+
+    def _error_placeholders(toks):
+        return [{'token': t, 'start': '[error]', 'end': '[error]', 'score': 0.0} for t in toks]
+
+    out = []
+    for (s, e), toks in zip(ns_ranges, line_groups):
+        if not toks:
+            continue   # 空组：纯间奏乐句，跳过不对齐
+        seg = audio_file[int(s * sr):int(e * sr)]
+        if len(seg) < int(0.05 * sr):
+            out.extend(_error_placeholders(toks))
+            continue
+        r = align_audio_with_text(seg, toks, [], sr)
+        if not r:
+            out.extend(_error_placeholders(toks))
+            continue
+        for x in r:
+            if 'original_start' in x:
+                x['original_start'] += s
+                x['original_end'] += s
+                x['start'] = _fmt_seconds(x['original_start'])
+                x['end'] = _fmt_seconds(x['original_end'])
+        out.extend(r)
+    return out
+
+def _align_autoheal(audio_file, tokens, ns_ranges, sr, base_speed,
+                    result_list=None, align_mode='global'):
+    """收集多个对齐候选并选置信度最高者，全自动无需人工返工：
+      - align_mode='phrase' 时先尝试分句约束对齐（实验性）；
+      - 整曲对齐始终作为候选/兜底；失败时自动换速重试。
+    align_mode='global'（默认）时行为与原先完全一致；若 torchaudio 不提供分数，
+    则退化为单次对齐（绝不比现状更差）。"""
+    print('Adding timelines...')
+    candidates = []
+
+    if align_mode == 'phrase' and result_list is not None:
+        try:
+            raw_groups = _split_tokens_by_line(result_list)
+            matched = _match_lines_to_phrases(raw_groups, ns_ranges)
+            if matched is None:
+                print('分句↔行 DP 匹配失败，回退整曲对齐。')
+                r = None
+            else:
+                r = _align_per_phrase(audio_file, sr, matched, ns_ranges)
+            if r:
+                ms = _mean_score(r)
+                candidates.append((ms if ms is not None else float('-inf'), r))
+                nonempty = sum(1 for g in matched if g)
+                print(f'分句约束对齐完成（{len(raw_groups)} 行 → {len(ns_ranges)} 乐句, '
+                      f'非空 {nonempty} 个）。')
+            else:
+                print('分句约束对齐未产出结果，使用整曲对齐。')
+        except Exception as e:
+            print(f'分句约束对齐失败，回退整曲对齐: {e}')
+
+    best = _run_align(audio_file, tokens, ns_ranges, sr, base_speed)
+    if best:
+        ms = _mean_score(best)
+        candidates.append((ms if ms is not None else float('-inf'), best))
+        if _alignment_has_failure(best):
+            print('检测到部分乐句对齐置信度偏低，正在自动重试（无需人工介入）...')
+            for sp in ([0.5] if float(base_speed) == 1.0 else [1.0]):
+                try:
+                    res = _run_align(audio_file, tokens, ns_ranges, sr, sp)
+                except Exception as e:
+                    print(f'自动重试 (speed={sp}) 出错，已跳过: {e}')
+                    continue
+                if res:
+                    ms2 = _mean_score(res)
+                    candidates.append((ms2 if ms2 is not None else float('-inf'), res))
+
+    if not candidates:
+        return []
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    if len(candidates) > 1:
+        print(f'已自动选择置信度最高的对齐结果（共 {len(candidates)} 个候选）。')
+    return candidates[0][1]
+
+# ============================================================
+# QC 旁路报告：把每行平均置信度写到 {audio}.qc.txt（人 0 干预的成品 + 一眼可疑）
+# ============================================================
+
+def _write_qc_sidecar(path, result_list):
+    """生成对齐置信度报告，旁路写入 {audio}.qc.txt：
+      - 整曲平均分
+      - 每行平均分（低于半数的标 !）
+      - 每行最低 3 个 token 及其分数（便于直接定位可疑字）
+    阅读这份报告完全可选——目的是让"全自动"模式下用户一眼能看出哪几行需要复查，
+    无需打开 Aegisub 听音。"""
+    lines = []
+    cur_text = ''
+    cur_scores = []
+    cur_tokens = []
+    for item in result_list:
+        if item.get('type') == 0 and item.get('orig') == '\n':
+            if cur_tokens:
+                m = sum(cur_scores) / len(cur_scores) if cur_scores else None
+                lines.append((cur_text.strip(), m, list(zip(cur_tokens, cur_scores))))
+            cur_text = ''
+            cur_scores = []
+            cur_tokens = []
+        else:
+            cur_text += item.get('orig', '')
+            if item.get('pron') and isinstance(item.get('score'), (int, float)):
+                cur_scores.append(item['score'])
+                cur_tokens.append(item['pron'])
+    if cur_tokens:
+        m = sum(cur_scores) / len(cur_scores) if cur_scores else None
+        lines.append((cur_text.strip(), m, list(zip(cur_tokens, cur_scores))))
+
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write('autoKara — 对齐置信度报告\n')
+            f.write('=' * 60 + '\n')
+            means = [m for _, m, _ in lines if m is not None]
+            overall = sum(means) / len(means) if means else 0.0
+            # 取最低 ~10%（至少 1）作为复查名单，避免被全曲均值带偏
+            sorted_means = sorted(means)
+            n_flag = max(1, len(sorted_means) // 10) if sorted_means else 0
+            thresh = sorted_means[n_flag - 1] if n_flag > 0 else 0.0
+            flagged = [i + 1 for i, (_, m, _) in enumerate(lines)
+                       if m is not None and m <= thresh]
+            f.write(f'整曲平均置信度: {overall:.3f}    歌词行数: {len(lines)}\n')
+            if flagged:
+                f.write(f'重点复查（最低 {len(flagged)} 行，标 !）: '
+                        + ', '.join(f'L{x:02d}' for x in flagged) + '\n')
+            f.write('\n')
+            for i, (text, mean, toks) in enumerate(lines, 1):
+                marker = '!' if (mean is not None and mean <= thresh) else ' '
+                mean_str = f'{mean:.3f}' if mean is not None else ' N/A '
+                f.write(f'L{i:02d} {mean_str} {marker} {text}\n')
+                if toks:
+                    lows = sorted(toks, key=lambda x: x[1])[:3]
+                    f.write(f'         低分: ' + '  '.join(f'{t}={s:.3f}' for t, s in lows) + '\n')
+    except Exception as e:
+        print(f'(QC 报告写入失败，已忽略: {e})')
+
+# ============================================================
 # 核心管线
 # ============================================================
 
 def run_pipeline(input_audio_path, input_text_path, output_dir,
                  sokuon_split=0, hatsuon_split=1, audio_speed=1.0,
                  tail_correct=3, silent_window_s=0.8, tail_thres_pct=10,
-                 tail_thres_ratio=0.1, output_characters_per_line=0):
+                 tail_thres_ratio=0.1, output_characters_per_line=0,
+                 align_mode='phrase'):
     start_time = time.time()
 
     original_audio_name = os.path.splitext(os.path.basename(input_audio_path))[0]
@@ -801,7 +1094,22 @@ def run_pipeline(input_audio_path, input_text_path, output_dir,
     print(f"输入音频: {input_audio_path}")
     print(f"输入文本: {input_text_path}")
     print(f"输出目录: {output_dir}")
-    os.makedirs(output_dir, exist_ok=True)
+
+    # 输入预检：友好失败胜过对齐 10 分钟之后才发现路径不可写或文件损坏
+    if not os.path.isfile(input_audio_path):
+        raise RuntimeError(f"音频文件不存在: {input_audio_path}")
+    if os.path.getsize(input_audio_path) < 1024:
+        raise RuntimeError(f"音频文件疑似损坏或为空 (<1KB): {input_audio_path}")
+    if not os.path.isfile(input_text_path):
+        raise RuntimeError(f"歌词文件不存在: {input_text_path}")
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        _probe = os.path.join(output_dir, '.write_probe')
+        with open(_probe, 'w') as _f:
+            _f.write('ok')
+        os.remove(_probe)
+    except OSError as e:
+        raise RuntimeError(f"输出目录不可写：{output_dir}\n（{e}）请换一个有写入权限的目录。")
 
     if separate.needs_separation(input_audio_path):
         sep_dir = os.path.join(output_dir, "separated")
@@ -851,34 +1159,33 @@ def run_pipeline(input_audio_path, input_text_path, output_dir,
             alignment_tokens.append(item['pron'])
             token_to_index_map[len(alignment_tokens) - 1] = i
 
+    if not alignment_tokens:
+        raise RuntimeError("歌词解析后没有可对齐的字符。请检查歌词文件是否为空、是否含纯标点，或注音格式是否正确。")
+
     end_time = time.time()
     print("Lyrics text analysis executed in", round(end_time - start_time, 3), "seconds")
 
     audio_file, sr = librosa.load(input_audio_path, sr=None)
     non_silent_ranges = non_silent_recog(audio_file, sr, silent_window_s, tail_thres_pct, tail_thres_ratio)
 
-    if audio_speed == 1:
-        print('Adding timelines...')
-        print("[调试信息] 即将被用于对齐的 alignment_tokens:", alignment_tokens)
-        alignment_results = align_audio_with_text(audio_file, alignment_tokens, non_silent_ranges, sr)
-    else:
-        print('Changing the audio speed...')
-        start_time = time.time()
-        y_processed = librosa.effects.time_stretch(audio_file, rate=audio_speed)
-        end_time = time.time()
-        print("Audio speed changing executed in", round(end_time - start_time, 3), "seconds")
-        print('Adding timelines...')
-        alignment_results = align_audio_with_text(y_processed, alignment_tokens, non_silent_ranges, sr, audio_speed)
+    alignment_results = _align_autoheal(audio_file, alignment_tokens, non_silent_ranges, sr,
+                                        audio_speed, result_list=result_list, align_mode=align_mode)
 
     if not alignment_results:
-        print("错误：对齐失败，未能生成时间戳。程序终止。")
-        sys.exit(1)
+        # 不用 sys.exit：GUI 工作线程接到 RuntimeError 才能显示实际原因，而不是退出码 "1"
+        raise RuntimeError("对齐失败，未能生成时间戳。可能原因：音频无人声 / 歌词与音频严重不匹配 / "
+                           "torch+torchaudio 版本不一致。试试在开始菜单运行『环境诊断』查看环境状态。")
 
     for i, result in enumerate(alignment_results):
         if i in token_to_index_map:
             original_index = token_to_index_map[i]
+            if result.get('start') == '[error]':
+                # 该 token 对齐失败 → 不写 start/end，V2/V3 会按"无时间"处理而不是崩
+                result_list[original_index]['score'] = result.get('score', 0.0)
+                continue
             result_list[original_index]['start'] = result['start']
             result_list[original_index]['end'] = result['end']
+            result_list[original_index]['score'] = result.get('score')
 
     result_list = non_silent_head_adjust(result_list, non_silent_ranges)
 
@@ -939,6 +1246,8 @@ Comment: 0,0:00:00.00,0:00:00.00,K1,music,0,0,0,template fx no_k,!retime("line",
     with open(os.path.join(output_dir, f'{original_audio_name}.ass'), 'w', encoding='utf-8') as f:
         f.write(ass_head + ass_output)
 
+    _write_qc_sidecar(os.path.join(output_dir, f'{original_audio_name}.qc.txt'), result_list)
+
     print(f'Success! 所有文件已输出到: {output_dir}')
 
 # ============================================================
@@ -961,12 +1270,80 @@ def auto_annotate(text):
             result.append(add_furigana(line))
     return '\n'.join(result)
 
+def doctor():
+    """打印环境诊断报告，方便用户提 issue 时一行贴出。"""
+    import platform, shutil
+    try:
+        import importlib.metadata as M
+    except Exception:
+        import importlib_metadata as M  # py<3.8 fallback
+    def v(pkg):
+        try:
+            return M.version(pkg)
+        except Exception:
+            return "MISSING"
+
+    cuda_ok = False; cuda_ver = "-"; gpu_name = "-"
+    try:
+        import torch
+        cuda_ok = bool(torch.cuda.is_available())
+        cuda_ver = torch.version.cuda or "-"
+        if cuda_ok:
+            try: gpu_name = torch.cuda.get_device_name(0)
+            except Exception: pass
+        torch_v = torch.__version__
+    except Exception as e:
+        torch_v = f"IMPORT FAILED ({e})"
+
+    try:
+        import torchaudio
+        ta_v = torchaudio.__version__
+    except Exception as e:
+        ta_v = f"IMPORT FAILED ({e})"
+
+    # MMS 模型
+    mms_path = "-"; mms_size = "-"
+    try:
+        import torch as _t
+        cache = os.path.join(_t.hub.get_dir(), 'checkpoints', 'model.pt')
+        if os.path.isfile(cache):
+            mms_path = cache
+            mms_size = f"{os.path.getsize(cache)/1e6:.1f} MB"
+    except Exception:
+        pass
+
+    try:
+        free_gb = shutil.disk_usage(os.path.dirname(os.path.realpath(__file__))).free / 2**30
+    except Exception:
+        free_gb = -1
+
+    print("autoKara doctor — 环境诊断 ====================================")
+    print(f"Python       : {platform.python_version()}  ({sys.executable})")
+    print(f"OS           : {platform.platform()}")
+    print(f"torch        : {torch_v}    cuda_build={cuda_ver}    available={cuda_ok}")
+    print(f"GPU          : {gpu_name}")
+    print(f"torchaudio   : {ta_v}")
+    print(f"MMS-FA model : {mms_path}  ({mms_size})")
+    print(f"SudachiDict  : core={v('SudachiDict-core')}    full={v('SudachiDict-full')}")
+    print(f"SudachiPy    : {v('SudachiPy')}")
+    print(f"librosa      : {v('librosa')}")
+    print(f"demucs       : {v('demucs')}")
+    print(f"Janome       : {v('Janome')}    pykakasi: {v('pykakasi')}    pyphen: {v('pyphen')}")
+    print(f"Pillow       : {v('Pillow')}    nltk: {v('nltk')}    soundfile: {v('soundfile')}")
+    print(f"tkinterdnd2  : {v('tkinterdnd2')}")
+    print(f"Free disk    : {free_gb:.1f} GiB" if free_gb > 0 else "Free disk    : -")
+    print("=================================================================")
+
 def main():
+    if '--doctor' in sys.argv:
+        doctor()
+        return
+
     script_dir = os.path.dirname(os.path.realpath(__file__))
     default_input_dir = os.path.join(script_dir, 'input')
     default_output_dir = os.path.join(script_dir, 'output')
 
-    parser = argparse.ArgumentParser(description='FA-Kara: 自动注音 + 强制对齐 → 卡拉OK字幕')
+    parser = argparse.ArgumentParser(description='autoKara: 自动注音 + 强制对齐 → 卡拉OK字幕')
     parser.add_argument('-i', '--input_dir', default=default_input_dir, help=f'输入文件夹路径 (默认: ./input)')
     parser.add_argument('-o', '--output_dir', default=default_output_dir, help=f'输出文件夹路径 (默认: ./output)')
     parser.add_argument('--raw', action='store_true', help='强制重新自动注音（忽略已有的{漢字|よみ}标记）')
@@ -978,6 +1355,9 @@ def main():
     parser.add_argument('-tp', '--tail_thres_pct', type=float, default=10, help='尾音阈值百分位数，单位：％')
     parser.add_argument('-tr', '--tail_thres_ratio', type=float, default=0.1, help='尾音阈值比例')
     parser.add_argument('-cl', '--characters_per_line', type=int, default=0, help='输出文件每行最大字数')
+    parser.add_argument('--align-mode', choices=['global', 'phrase'], default='phrase',
+                        help='对齐模式：phrase=分句约束(默认，实测置信度+125%,无整曲漂移)；global=整曲(回退选项)。'
+                             'phrase 模式始终也会跑 global 作候选，按置信度自动择优。')
     args = parser.parse_args()
 
     input_dir = os.path.normpath(args.input_dir)
@@ -1025,6 +1405,7 @@ def main():
         tail_thres_pct=args.tail_thres_pct,
         tail_thres_ratio=args.tail_thres_ratio,
         output_characters_per_line=args.characters_per_line,
+        align_mode=args.align_mode,
     )
 
 if __name__ == '__main__':

@@ -47,24 +47,37 @@ FONT_BTN   = ("Microsoft YaHei", 10, "bold")
 
 # ── 标准输出重定向 ────────────────────────────────────────────
 class LogRedirector:
-    """将 print 输出重定向到日志框"""
+    """把工作线程的 stdout/stderr 安全地转发到主线程日志框。
+    线程安全（Lock）+ 容错（bytes/解码失败一律 'replace'），避免 Windows GBK 与 UTF-8 混用时崩溃。"""
     def __init__(self, callback):
         self.callback = callback
         self.buffer = ""
+        import threading
+        self._lock = threading.Lock()
 
     def write(self, text):
-        self.buffer += text
-        if text.endswith('\n') or '\n' in text:
-            lines = self.buffer.split('\n')
-            self.buffer = lines.pop()
-            for line in lines:
-                if line.strip():
-                    self.callback(line.strip())
+        # 防御：上游若误传 bytes（少见，但 C 扩展可能），先解码
+        if isinstance(text, (bytes, bytearray)):
+            try:
+                text = text.decode('utf-8', errors='replace')
+            except Exception:
+                text = str(text)
+        emit = []
+        with self._lock:
+            self.buffer += text
+            if '\n' in self.buffer:
+                lines = self.buffer.split('\n')
+                self.buffer = lines.pop()
+                emit = [l for l in lines if l.strip()]
+        for line in emit:
+            self.callback(line.strip())
 
     def flush(self):
-        if self.buffer.strip():
-            self.callback(self.buffer.strip())
+        with self._lock:
+            rest = self.buffer.strip()
             self.buffer = ""
+        if rest:
+            self.callback(rest)
 
 
 # ── 主界面 ────────────────────────────────────────────────────
@@ -80,17 +93,73 @@ class KaraokeApp:
         self.audio_path = tk.StringVar()
         self.lyrics_text = ""          # 歌词原文（不再追踪文件路径）
         self.lyrics_status = tk.StringVar(value="未输入歌词")
-        self.output_dir = tk.StringVar(value=r"D:\normal\database\gal群\mv")
+        _default_out = os.path.join(os.path.expanduser("~"), "Desktop")
+        if not os.path.isdir(_default_out):
+            _default_out = os.path.expanduser("~")
+        self.output_dir = tk.StringVar(value=_default_out)
         self.auto_furi = tk.BooleanVar(value=True)
+        self.auto_full = tk.BooleanVar(value=True)   # 全自动模式：跳过注音确认弹窗
         self.tail_correct = tk.StringVar(value="3")
         self.audio_speed = tk.StringVar(value="1.0")
         self.chars_per_line = tk.StringVar(value="0")
         self.advanced_visible = False
         self.processing = False
         self.stage_var = tk.StringVar(value="就绪")
+        self._temp_files = []       # 自动清理：弹窗/启动产生的临时文件
+        self._last_output = None    # 上次成功输出的 .ass 路径（完成面板用）
+        self._last_audio_dir = None # 浏览对话框记忆上次目录
 
+        self._load_settings()       # 从 %LOCALAPPDATA%\autoKara\settings.json 恢复用户偏好
         self._build_ui()
         self._setup_dnd()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ── 用户偏好持久化 ──────────────────────────────────────
+    def _settings_path(self):
+        base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
+        return os.path.join(base, 'autoKara', 'settings.json')
+
+    def _load_settings(self):
+        try:
+            import json
+            p = self._settings_path()
+            if not os.path.isfile(p):
+                return
+            with open(p, 'r', encoding='utf-8') as f:
+                d = json.load(f)
+            if 'output_dir' in d and os.path.isdir(d['output_dir']):
+                self.output_dir.set(d['output_dir'])
+            for key, var in (('auto_furi', self.auto_furi),
+                             ('auto_full', self.auto_full)):
+                if key in d:
+                    var.set(bool(d[key]))
+            for key, var in (('tail_correct', self.tail_correct),
+                             ('audio_speed', self.audio_speed),
+                             ('chars_per_line', self.chars_per_line)):
+                if key in d:
+                    var.set(str(d[key]))
+            self._last_audio_dir = d.get('last_audio_dir')
+        except Exception:
+            pass  # 损坏的设置文件不阻塞启动
+
+    def _save_settings(self):
+        try:
+            import json
+            p = self._settings_path()
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            d = {
+                'output_dir': self.output_dir.get(),
+                'auto_furi': self.auto_furi.get(),
+                'auto_full': self.auto_full.get(),
+                'tail_correct': self.tail_correct.get(),
+                'audio_speed': self.audio_speed.get(),
+                'chars_per_line': self.chars_per_line.get(),
+                'last_audio_dir': self._last_audio_dir,
+            }
+            with open(p, 'w', encoding='utf-8') as f:
+                json.dump(d, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     # ── UI 构建 ─────────────────────────────────────────────
 
@@ -109,7 +178,7 @@ class KaraokeApp:
             ico_img.save(self._ico_path, format="ICO")
             self.root.iconbitmap(self._ico_path)
             # 界面 Logo（大尺寸）
-            img = img.resize((130, 130), Image.LANCZOS)
+            img = img.resize((80, 80), Image.LANCZOS)
             self.logo_img = ImageTk.PhotoImage(img)
             tk.Label(title_frame, image=self.logo_img, bg=BG_MAIN).pack()
         else:
@@ -179,6 +248,10 @@ class KaraokeApp:
         opt_frame.pack(fill=tk.X, pady=(0, 6))
         tk.Checkbutton(opt_frame, text="自动注音（纯日文歌词自动添加 {漢字|よみ} 标记）",
                        variable=self.auto_furi, font=FONT_LABEL,
+                       bg=BG_MAIN, fg=TEXT_DARK, activebackground=BG_MAIN,
+                       selectcolor=BG_MAIN, anchor=tk.W).pack(anchor=tk.W)
+        tk.Checkbutton(opt_frame, text="全自动模式（跳过注音确认弹窗，全程无需人工介入）",
+                       variable=self.auto_full, font=FONT_LABEL,
                        bg=BG_MAIN, fg=TEXT_DARK, activebackground=BG_MAIN,
                        selectcolor=BG_MAIN, anchor=tk.W).pack(anchor=tk.W)
 
@@ -261,11 +334,17 @@ class KaraokeApp:
         tk.Label(card, text=title, font=FONT_LABEL,
                  bg=BG_CARD, fg=TEXT_DARK).grid(row=0, column=0, sticky=tk.W, columnspan=2)
 
+        # 拖放区视觉提示：浅蓝底色 + 虚线感边框 + 悬停效果
         self.audio_drop_label = tk.Label(card, text=placeholder,
                                          font=("Microsoft YaHei", 10), bg="#F0F6FC",
-                                         fg=TEXT_GREY, anchor=tk.CENTER, padx=10, pady=14)
+                                         fg=TEXT_GREY, anchor=tk.CENTER, padx=10, pady=14,
+                                         relief=tk.RIDGE, borderwidth=2)
         self.audio_drop_label.grid(row=1, column=0, sticky=tk.EW, pady=(4, 0))
         self.audio_drop_label.bind("<Button-1>", lambda e: browse_cmd())
+        self.audio_drop_label.bind("<Enter>",
+            lambda e: self.audio_drop_label.config(bg="#E1EFFC"))
+        self.audio_drop_label.bind("<Leave>",
+            lambda e: self.audio_drop_label.config(bg="#F0F6FC"))
 
         path_lbl = tk.Label(card, textvariable=path_var,
                             font=FONT_PATH, bg=BG_CARD, fg=GREEN, anchor=tk.W)
@@ -499,11 +578,15 @@ class KaraokeApp:
     # ── 浏览 ────────────────────────────────────────────────
 
     def _browse_audio(self):
-        path = filedialog.askopenfilename(
-            title="选择音频文件",
-            filetypes=[("音频文件", "*.wav;*.mp3;*.flac;*.ogg;*.m4a"), ("所有文件", "*.*")])
+        kwargs = dict(title="选择音频文件",
+                      filetypes=[("音频文件", "*.wav;*.mp3;*.flac;*.ogg;*.m4a"),
+                                 ("所有文件", "*.*")])
+        if self._last_audio_dir and os.path.isdir(self._last_audio_dir):
+            kwargs['initialdir'] = self._last_audio_dir
+        path = filedialog.askopenfilename(**kwargs)
         if path:
             self.audio_path.set(os.path.normpath(path))
+            self._last_audio_dir = os.path.dirname(path)
             self._update_drop_label(self.audio_drop_label, path, True)
 
     def _browse_output(self):
@@ -594,22 +677,26 @@ class KaraokeApp:
                     continue
                 result.append(add_furigana(line) if not self._has_furigana(line) else line)
             annotated = '\n'.join(result)
-            self.log_message("自动注音完成，请在弹窗中检查并修改", "success")
-
-            edited = self._open_furigana_popup(annotated)
-            if edited is None:
-                self.log_message("已取消注音预览，处理中止", "")
-                return
-            lyrics_to_use = edited
-            self.log_message("使用编辑后的注音结果继续...", "info")
+            if self.auto_full.get():
+                self.log_message("全自动模式：跳过注音确认，直接对齐", "info")
+                lyrics_to_use = annotated
+            else:
+                self.log_message("自动注音完成，请在弹窗中检查并修改", "success")
+                edited = self._open_furigana_popup(annotated)
+                if edited is None:
+                    self.log_message("已取消注音预览，处理中止", "")
+                    return
+                lyrics_to_use = edited
+                self.log_message("使用编辑后的注音结果继续...", "info")
         else:
             lyrics_to_use = self.lyrics_text
 
-        # 写入临时文件
+        # 写入临时文件（注册到 self._temp_files 由关窗回调清理）
         tmp = tempfile.NamedTemporaryFile(
             mode='w', suffix='.txt', delete=False, encoding='utf-8')
         tmp.write(lyrics_to_use)
         tmp.close()
+        self._temp_files.append(tmp.name)
 
         self._run_pipeline(audio, tmp.name, output)
 
@@ -620,18 +707,25 @@ class KaraokeApp:
         self.stage_var.set("准备中...")
         self.progress.start(10)
 
-        try:
-            tail = int(self.tail_correct.get())
-        except ValueError:
-            tail = 3
-        try:
-            speed = float(self.audio_speed.get())
-        except ValueError:
-            speed = 1.0
-        try:
-            cpl = int(self.chars_per_line.get())
-        except ValueError:
-            cpl = 0
+        # 高级参数解析 + 钳位 + 用户可见警告（不再静默吞掉错值）
+        def _coerce(var, default, lo, hi, name, cast):
+            raw = var.get().strip()
+            try:
+                v = cast(raw)
+            except (ValueError, TypeError):
+                self.log_message(f"⚠ 高级参数 {name}='{raw}' 不是合法数字，已用默认值 {default}", "error")
+                var.set(str(default))
+                return default
+            if v < lo or v > hi:
+                v_clamped = max(lo, min(hi, v))
+                self.log_message(f"⚠ 高级参数 {name}={v} 超出范围 [{lo}, {hi}]，已钳位到 {v_clamped}", "error")
+                var.set(str(v_clamped))
+                return v_clamped
+            return v
+
+        tail = _coerce(self.tail_correct, 3, 0, 3, "尾音修正", int)
+        speed = _coerce(self.audio_speed, 1.0, 0.25, 4.0, "音频倍速", float)
+        cpl = _coerce(self.chars_per_line, 0, 0, 200, "每行字数", int)
 
         self.log_message(f"参数: 尾音修正={tail}, 倍速={speed}, 字数限制={cpl}", "info")
         self.log_message("开始对齐处理...\n", "info")
@@ -647,6 +741,14 @@ class KaraokeApp:
 
     def _worker(self, audio, lyrics, output, tail, speed, cpl):
         """后台线程：运行对齐管线"""
+        # 强制 UTF-8：Windows 控制台默认 GBK 会让日志里的中文/日文崩成乱码
+        try:
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
+        os.environ['PYTHONIOENCODING'] = 'utf-8'
+        os.environ['PYTHONUTF8'] = '1'
         old_stdout = sys.stdout
         sys.stdout = LogRedirector(self.log)
 
@@ -672,13 +774,125 @@ class KaraokeApp:
 
         if success:
             self.log_message(f"\n✓ 完成！文件已输出到: {self.output_dir.get()}", "success")
-            self.log_message("  • o_ruby.lrc — NicoKaraMaker3 用", "success")
-            self.log_message("  • o_rlf.lrc  — RhythmicaLyrics 用", "success")
-            self.log_message("  • output.ass — Aegisub 用", "success")
-            messagebox.showinfo("完成", f"字幕文件已生成到:\n{self.output_dir.get()}")
+            self._show_completion_panel()
         else:
             self.log_message(f"\n✗ 处理失败: {error_msg}", "error")
             messagebox.showerror("处理失败", f"对齐过程中出现错误:\n{error_msg}")
+
+    def _cleanup_temp_files(self):
+        """清理本次会话产生的临时歌词文件等，不影响 .ass 输出。"""
+        for p in self._temp_files:
+            try:
+                if os.path.isfile(p):
+                    os.remove(p)
+            except Exception:
+                pass
+        self._temp_files = []
+
+    def _on_close(self):
+        """关窗回调：若处理中则二次确认，否则保存设置 + 清理临时文件后正常关闭。"""
+        if self.processing:
+            if not messagebox.askyesno("处理中",
+                                        "字幕正在生成。强制关闭可能丢失本次结果。\n确认关闭吗？"):
+                return
+        try:
+            self._save_settings()
+        except Exception:
+            pass
+        self._cleanup_temp_files()
+        self.root.destroy()
+
+    # ── 完成面板：替换原 MessageBox，把 QC 报告关键信息直接展示给用户 ──
+    def _show_completion_panel(self):
+        audio = self.audio_path.get()
+        out = self.output_dir.get()
+        base = os.path.splitext(os.path.basename(audio))[0]
+        ass_path = os.path.join(out, base + '.ass')
+        qc_path = os.path.join(out, base + '.qc.txt')
+
+        overall = None
+        flagged_text = None
+        try:
+            if os.path.isfile(qc_path):
+                with open(qc_path, encoding='utf-8') as f:
+                    head = f.read(2000)
+                import re as _re
+                m1 = _re.search(r'整曲平均置信度: (\d+\.\d+)', head)
+                if m1:
+                    overall = float(m1.group(1))
+                m2 = _re.search(r'重点复查（最低 \d+ 行，标 !）: (.+)', head)
+                if m2:
+                    flagged_text = m2.group(1).strip()
+        except Exception:
+            pass
+
+        popup = self._make_popup("处理完成", 600, 380)
+
+        # 状态条：根据 overall 着色（高=绿、低=橙、极低=红）
+        if overall is None or overall >= 0.35:
+            bar_bg, icon = GREEN, "✓"
+        elif overall >= 0.2:
+            bar_bg, icon = "#E67E22", "⚠"
+        else:
+            bar_bg, icon = RED, "⚠"
+        status = tk.Frame(popup, bg=bar_bg, height=64)
+        status.pack(fill=tk.X)
+        status.pack_propagate(False)
+        tk.Label(status, text=f"{icon}  字幕已生成",
+                 font=("Microsoft YaHei", 14, "bold"),
+                 bg=bar_bg, fg="white").pack(side=tk.LEFT, padx=20, pady=12)
+        if overall is not None:
+            tk.Label(status, text=f"质量评分 {overall:.3f}",
+                     font=("Microsoft YaHei", 11),
+                     bg=bar_bg, fg="white").pack(side=tk.RIGHT, padx=20)
+
+        body = tk.Frame(popup, bg=BG_CARD)
+        body.pack(fill=tk.BOTH, expand=True, padx=16, pady=10)
+        tk.Label(body, text="输出位置:", font=FONT_LABEL,
+                 bg=BG_CARD, fg=TEXT_DARK).pack(anchor=tk.W)
+        tk.Label(body, text=out, font=FONT_PATH,
+                 bg=BG_CARD, fg=GREEN, anchor=tk.W).pack(anchor=tk.W, pady=(0, 6))
+
+        if flagged_text:
+            tk.Label(body, text="重点复查（可在 Aegisub 中确认这几行）:",
+                     font=FONT_LABEL, bg=BG_CARD, fg=TEXT_DARK).pack(anchor=tk.W, pady=(8, 2))
+            tk.Label(body, text=flagged_text, font=("Consolas", 10),
+                     bg=BG_CARD, fg="#E67E22", anchor=tk.W, wraplength=540, justify=tk.LEFT).pack(anchor=tk.W)
+        elif overall is not None:
+            tk.Label(body, text="✓ 没有明显可疑的行，可直接使用",
+                     font=FONT_LABEL, bg=BG_CARD, fg=GREEN).pack(anchor=tk.W, pady=(8, 2))
+
+        btns = tk.Frame(popup, bg=BG_MAIN)
+        btns.pack(fill=tk.X, padx=16, pady=12)
+
+        def _safe_open(p):
+            try:
+                os.startfile(p)
+            except Exception as e:
+                messagebox.showerror("打开失败", f"{p}\n{e}")
+
+        def _copy(p):
+            self.root.clipboard_clear()
+            self.root.clipboard_append(p)
+
+        for text, cmd in [
+            ("打开输出文件夹", lambda: _safe_open(out)),
+            ("复制 ASS 路径", lambda: _copy(ass_path)),
+            ("打开 ASS 文件", lambda: _safe_open(ass_path)),
+        ]:
+            tk.Button(btns, text=text, font=FONT_LABEL,
+                      bg=BLUE, fg="white", activebackground=BLUE_HOVER,
+                      activeforeground="white", relief=tk.FLAT, cursor="hand2",
+                      padx=10, pady=4, command=cmd).pack(side=tk.LEFT, padx=(0, 8))
+        if os.path.isfile(qc_path):
+            tk.Button(btns, text="查看 QC 报告", font=FONT_LABEL,
+                      bg="#8EBBE0", fg="white", activebackground="#7AABD0",
+                      activeforeground="white", relief=tk.FLAT, cursor="hand2",
+                      padx=10, pady=4,
+                      command=lambda: _safe_open(qc_path)).pack(side=tk.LEFT)
+        tk.Button(btns, text="关闭", font=FONT_LABEL,
+                  bg="#CCCCCC", fg=TEXT_DARK, relief=tk.FLAT, cursor="hand2",
+                  padx=10, pady=4, command=popup.destroy).pack(side=tk.RIGHT)
 
 
 # ── 入口 ──────────────────────────────────────────────────────
@@ -690,7 +904,7 @@ def main():
 
     app = KaraokeApp(root)
 
-    app.log_message(" aeg 卡拉OK字幕生成器 已就绪", "info")
+    app.log_message("autoKara 卡拉OK字幕生成器 已就绪", "info")
     app.log_message("请拖入或选择音频和歌词文件", "")
     app.log_message(f"输出目录: {app.output_dir.get()}\n", "")
 
