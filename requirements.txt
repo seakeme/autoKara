@@ -14,11 +14,14 @@
 #
 # 之后再安装其余依赖:
 #   pip install -r requirements.txt
+#
+# （一键安装程序 installer/ 会自动检测显卡并完成以上全部步骤）
 # ============================================================
 
 # --- 核心管线 ---
 librosa>=0.11.0
 numpy>=1.24.0
+soundfile>=0.12.1          # 音频读写后端 (mp3/flac/ogg 解码)，librosa/torchaudio 需要
 
 # --- 强制对齐 + 人声分离 (需先手动安装对应 CUDA 版本的 torch) ---
 # torch>=2.8.0
@@ -31,6 +34,9 @@ nltk>=3.8.0
 pykakasi>=2.3.0
 pyphen>=0.17.0
 SudachiPy>=0.6.0
+SudachiDict-core>=20230927  # SudachiPy 词典包，缺它 furigana 自动注音会直接报错
+SudachiDict-full>=20230927  # 更全的词典，显著降低读音错误（体积较大，安装时自动下载，缺失则回退 core）
 
 # --- GUI ---
 Pillow>=9.0.0
+tkinterdnd2>=0.3.0          # 拖拽音频文件支持 (缺它则拖拽功能静默失效)
