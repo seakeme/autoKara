@@ -51,10 +51,11 @@ Source: "..\requirements.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\readings.txt";     DestDir: "{app}"; Flags: onlyifdoesntexist
 Source: "..\knm.png";          DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md";        DestDir: "{app}"; Flags: ignoreversion
-Source: "..\USER_GUIDE.md";    DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 Source: "..\LICENSE";          DestDir: "{app}"; Flags: ignoreversion
-; --- 环境配置脚本（安装时运行，也可日后重跑） ---
+; --- 环境配置脚本 + 入口 ---
 Source: "setup_env.bat";       DestDir: "{app}"; Flags: ignoreversion
+; autoKara.bat：桌面/开始菜单快捷方式真正指向的入口。环境没装完时自动接着装、装完启 GUI
+Source: "autoKara.bat";        DestDir: "{app}"; Flags: ignoreversion
 ; --- 可选图标（build_installer.bat 会尝试由 knm.png 生成） ---
 Source: "app.ico";             DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
@@ -72,17 +73,14 @@ Filename: "{cmd}"; Parameters: "/c ""{app}\setup_env.bat"""; \
     Flags: waituntilterminated
 
 [Icons]
-; 主快捷方式指向 launcher.py（先做依赖健康检查，再启 GUI；崩溃会弹友好对话框而不是黑屏闪退）
-Name: "{group}\autoKara";       Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\launcher.py"""; WorkingDir: "{app}"; IconFilename: "{app}\app.ico"
+; 主快捷方式指向 autoKara.bat —— 它会先确认私有 Python 在不在，不在就接着装、装完启 GUI
+Name: "{group}\autoKara";       Filename: "{app}\autoKara.bat"; WorkingDir: "{app}"; IconFilename: "{app}\app.ico"
 Name: "{group}\重新配置环境";    Filename: "{app}\setup_env.bat"; WorkingDir: "{app}"
 ; 环境诊断（控制台显示，方便复制结果给作者排查）
 Name: "{group}\环境诊断";        Filename: "{app}\python\python.exe"; Parameters: """{app}\main.py"" --doctor"; WorkingDir: "{app}"
-; 打开日志目录（launcher 每次运行都会写一份日志到这里）
 Name: "{group}\打开日志目录";    Filename: "{cmd}"; Parameters: "/c explorer ""%LOCALAPPDATA%\autoKara\logs"""; WorkingDir: "{app}"
-; 用户指南
-Name: "{group}\用户指南";        Filename: "{app}\USER_GUIDE.md"; WorkingDir: "{app}"
 Name: "{group}\卸载 autoKara";   Filename: "{uninstallexe}"
-Name: "{autodesktop}\autoKara"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\launcher.py"""; WorkingDir: "{app}"; IconFilename: "{app}\app.ico"; Tasks: desktopicon
+Name: "{autodesktop}\autoKara"; Filename: "{app}\autoKara.bat"; WorkingDir: "{app}"; IconFilename: "{app}\app.ico"; Tasks: desktopicon
 
 [UninstallDelete]
 ; 卸载时清理安装器装入的私有 Python / 缓存 / 标记 / 输出

@@ -49,9 +49,16 @@ if /i "%AUTOKARA_MIRROR%"=="cn" (
 
 echo(
 echo ============================================================
-echo   autoKara 一键环境配置  (分阶段，可断点续装)
-echo   安装目录: %APPDIR%
+echo
+echo     [!] 请勿关闭此窗口   DO NOT CLOSE THIS WINDOW
+echo
+echo     autoKara 正在配置运行环境（10-40 分钟，取决于网速）。
+echo     看到 "环境配置完成" 字样后窗口才会自动结束。
+echo     若中途意外关闭，下次启动 autoKara 会自动续装。
+echo
 echo ============================================================
+echo(
+echo   安装目录: %APPDIR%
 echo(
 
 if exist "%MARKER%" (
