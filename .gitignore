@@ -5,3 +5,19 @@ __pycache__/
 venv/
 .claude/
 *.ico
+
+# 用户数据 / 临时输出 / 验证产物
+input/
+output/
+*.qc.txt
+_val*
+_test*
+_final*
+
+# 安装相关：构建产物 / 环境标记 / 分阶段标记
+installer/Output/
+.env_ready
+.state/
+
+# 用户偏好（每台机器各自的设置）
+settings.json
