@@ -2,7 +2,20 @@
 
 第一个有正式安装包的版本。不懂 Python 的人也能直接装来用——双击 setup.exe 一路 Next 就行。
 
-> 安装包已更新：修了一个会导致部分用户启动即崩的问题（英文发音词典 cmudict 在装机时偶尔下载失败，旧版会因此启动报 LookupError）。现在词典缺失只会让含英文的歌词降级为近似注音，不再影响启动，纯日文歌完全不受影响。已下过旧版的请重新下载安装包。
+> 安装包已多次更新修复装机/启动问题，已下过旧版的请重新下载下面的 `autoKara-setup.exe`：
+> - 英文发音词典 cmudict 现已内置在安装包里，不再从 GitHub 下载（国内常卡死/失败），装机不会再卡在这一步；
+> - 人声分离阶段报 `TorchCodec is required` 的问题已修复（改用 soundfile/librosa 读写音频，不再需要 torchcodec）；
+> - 早期"安装黑窗口被关掉后启动即崩 / 闪退"的问题也已修复（自动续装 + 纯 ASCII 脚本）。
+
+### 关于"conda 里看不到 autoKara 装的东西"
+
+这是**正常现象，不是出错**。autoKara 安装包用的是一份**独立的私有 Python**（装在 `安装目录\python\` 里），刻意和你系统里已有的 Python / Anaconda(conda) 环境**完全隔离**——这样既不会污染你的 conda 环境、也不会被你 conda 里的包版本干扰。所以：
+
+- `conda env list` / `conda list` 里**看不到** autoKara 或它的依赖，是设计如此；
+- autoKara 的所有依赖（torch、demucs、sudachipy 等）都装在 `安装目录\python\Lib\site-packages\` 下，自成一体；
+- 你**不需要**、也**不应该**用 conda 去管它。直接用桌面/开始菜单快捷方式启动即可。
+
+（如果你是开发者、想用自己的 conda 环境从源码跑，那是另一条路：见仓库 README 的"从源码运行"。）
 
 ### 装法
 
