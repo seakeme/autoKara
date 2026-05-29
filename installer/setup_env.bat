@@ -155,9 +155,17 @@ if exist "%M_MODELS%" (
     goto :finish
 )
 echo [5/5] Pre-downloading models and dictionaries (first run will be offline-ready)...
-echo       - nltk cmudict
-"%PY%" -m nltk.downloader cmudict
-if !errorlevel! neq 0 goto :fail
+echo       - nltk cmudict (English pronunciation dict; OPTIONAL)
+REM nltk.downloader can return 0 even when the download fails, so verify by
+REM actually loading it. cmudict is optional -- only used for English words in
+REM lyrics -- so a failure here just warns and does NOT abort the install.
+"%PY%" -m nltk.downloader cmudict >nul 2>&1
+"%PY%" -c "from nltk.corpus import cmudict; cmudict.dict(); print('  cmudict OK')"
+if !errorlevel! neq 0 (
+    echo       [warn] cmudict not available. This is OPTIONAL -- autoKara still
+    echo              works; English words just use approximate romaji. You can
+    echo              retry later from the "Reconfigure environment" shortcut.
+)
 echo       - Demucs htdemucs_ft  (~300 MB)
 "%PY%" -c "from demucs.pretrained import get_model; get_model('htdemucs_ft'); print('  Demucs OK')"
 if !errorlevel! neq 0 goto :fail

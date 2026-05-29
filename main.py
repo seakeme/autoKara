@@ -54,11 +54,26 @@ phoneme_map = {
     'Y': 'y', 'Z': 'z', 'ZH': 'j'
 }
 
-try:
-    cmu_dict = cmudict.dict()
-except LookupError:
-    nltk.download('cmudict')
-    cmu_dict = cmudict.dict()
+# CMUdict（英文发音词典）惰性 + 容错加载：仅当歌词里出现英文单词时才需要。
+# 缺失 / 下载失败都不致命 —— 退化为"按拼写近似注音"（process_english_word 已有该分支），
+# 纯日文歌完全不受影响。绝不能像以前那样在 import 时硬加载、一缺就让整个程序崩。
+cmu_dict = None   # None=尚未尝试加载；dict=已加载（{} 表示不可用）
+
+def _get_cmu_dict():
+    global cmu_dict
+    if cmu_dict is not None:
+        return cmu_dict
+    try:
+        cmu_dict = cmudict.dict()
+    except Exception:
+        try:
+            nltk.download('cmudict')
+            cmu_dict = cmudict.dict()
+        except Exception as e:
+            print(f"提示：英文发音词典(cmudict)不可用，含英文的歌词将按拼写近似注音。({e})")
+            cmu_dict = {}
+    return cmu_dict
+
 eng_dic = pyphen.Pyphen(lang='en_US')
 
 newnums = ['①', '②', '③', '④', '⑤', '⑥', '⑦', '⑧', '⑨', '⑩',
@@ -434,12 +449,13 @@ def process_english_word(word, surf=True):
     surface_syllables = hyphenated.split('-')
 
     word_lower = word.lower()
-    if word_lower not in cmu_dict:
+    _cmu = _get_cmu_dict()
+    if word_lower not in _cmu:
         print("Word '"+word+"' not in the dictionary...")
         direct_syllables = [i.replace("'", '').lower() for i in surface_syllables]
         return list(zip(surface_syllables, direct_syllables))
 
-    phonemes = cmu_dict[word_lower][0]
+    phonemes = _cmu[word_lower][0]
     syllables_phonemes = split_into_syllables_en(phonemes)
     syllables_romaji = []
     for syl in syllables_phonemes:
