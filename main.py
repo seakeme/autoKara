@@ -761,7 +761,8 @@ def align_audio_with_text(audio_file_path, text_tokens, non_silent_ranges=[], sr
     try:
         bundle = torchaudio.pipelines.MMS_FA
         if isinstance(audio_file_path, str):
-            waveform, sample_rate = torchaudio.load(audio_file_path)
+            # 用 separate.load_audio_tensor 而非 torchaudio.load，避开 torchcodec 依赖
+            waveform, sample_rate = separate.load_audio_tensor(audio_file_path)
         else:
             waveform = torch.tensor(audio_file_path).float()
             waveform = waveform.unsqueeze(0)
