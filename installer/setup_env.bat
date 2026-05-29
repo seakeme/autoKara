@@ -154,17 +154,26 @@ if exist "%M_MODELS%" (
     echo [5/5 SKIP] models / dictionaries already cached
     goto :finish
 )
-echo [5/5] Pre-downloading models and dictionaries (first run will be offline-ready)...
-echo       - nltk cmudict (English pronunciation dict; OPTIONAL)
-REM nltk.downloader can return 0 even when the download fails, so verify by
-REM actually loading it. cmudict is optional -- only used for English words in
-REM lyrics -- so a failure here just warns and does NOT abort the install.
-"%PY%" -m nltk.downloader cmudict >nul 2>&1
-"%PY%" -c "from nltk.corpus import cmudict; cmudict.dict(); print('  cmudict OK')"
+echo [5/5] Installing models and dictionaries (first run will be offline-ready)...
+echo       - cmudict (English pronunciation dict; bundled, no download)
+REM cmudict ships inside the installer (corpora\cmudict.zip). We copy it into the
+REM private Python's nltk_data search path so NO network is needed -- the GitHub
+REM download used to hang for users behind slow/blocked connections. cmudict is
+REM optional anyway (only English words in lyrics use it), so any failure just warns.
+if exist "%APPDIR%\nltk_data\corpora\cmudict.zip" (
+    if not exist "%PYDIR%\nltk_data\corpora" mkdir "%PYDIR%\nltk_data\corpora" 2>nul
+    copy /y "%APPDIR%\nltk_data\corpora\cmudict.zip" "%PYDIR%\nltk_data\corpora\cmudict.zip" >nul
+)
+"%PY%" -c "from nltk.corpus import cmudict; cmudict.dict(); print('  cmudict OK (bundled)')"
 if !errorlevel! neq 0 (
-    echo       [warn] cmudict not available. This is OPTIONAL -- autoKara still
-    echo              works; English words just use approximate romaji. You can
-    echo              retry later from the "Reconfigure environment" shortcut.
+    REM bundled copy missing/unreadable -> one time-boxed download attempt (never hangs)
+    echo       bundled copy not found, trying a quick download (max ~25s)...
+    "%PY%" -c "import socket; socket.setdefaulttimeout(25); import nltk; nltk.download('cmudict')" >nul 2>&1
+    "%PY%" -c "from nltk.corpus import cmudict; cmudict.dict(); print('  cmudict OK (downloaded)')"
+    if !errorlevel! neq 0 (
+        echo       [warn] cmudict unavailable. OPTIONAL -- autoKara still works;
+        echo              English words just use approximate romaji.
+    )
 )
 echo       - Demucs htdemucs_ft  (~300 MB)
 "%PY%" -c "from demucs.pretrained import get_model; get_model('htdemucs_ft'); print('  Demucs OK')"

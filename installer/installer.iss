@@ -56,6 +56,8 @@ Source: "..\LICENSE";          DestDir: "{app}"; Flags: ignoreversion
 Source: "setup_env.bat";       DestDir: "{app}"; Flags: ignoreversion
 ; autoKara.bat：桌面/开始菜单快捷方式真正指向的入口。环境没装完时自动接着装、装完启 GUI
 Source: "autoKara.bat";        DestDir: "{app}"; Flags: ignoreversion
+; 内置 cmudict（英文发音词典 ~0.9MB），免去 GitHub 下载（国内常卡死）。setup_env.bat 会拷进私有 Python
+Source: "nltk_data\corpora\cmudict.zip"; DestDir: "{app}\nltk_data\corpora"; Flags: ignoreversion
 ; --- 可选图标（build_installer.bat 会尝试由 knm.png 生成） ---
 Source: "app.ico";             DestDir: "{app}"; Flags: ignoreversion skipifsourcedoesntexist
 
