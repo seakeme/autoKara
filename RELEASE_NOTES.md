@@ -24,7 +24,7 @@
 ### 修复
 
 - cmudict 改为内置，不再从 GitHub 下载（之前国内会卡住或失败）。
-- 人声分离的音频读写改用 soundfile/librosa，不再需要 torchcodec（之前报 `TorchCodec is required`）。
+- 修复人声分离阶段报 `TorchCodec is required` 的问题：新版 torchaudio 的 load/save 默认要 torchcodec，改用 soundfile/librosa 读写音频后不再依赖它。
 - 安装脚本改为纯 ASCII，修复中文 bat 在部分机器上闪退的问题。
 
 ### 已知问题
