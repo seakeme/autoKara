@@ -13,7 +13,21 @@
 
 ## 安装
 
-Windows 用户可从 [Releases](https://github.com/seakeme/autoKara/releases) 下载预编译安装包。从源码运行：
+Windows 用户可从 [Releases](https://github.com/seakeme/autoKara/releases) 下载预编译安装包。
+下载 `autoKara-setup.exe`，双击 → Next。无需先装 Python。
+
+安装临近结尾会弹出 cmd 窗口，装 torch、下模型，**这一步大概 10–40 分钟，请保持窗口开着别关**（关了会留个半装状态，下次启动 autoKara 时会自动重新接着配）。
+
+国内网络拉得慢的话，先开 PowerShell 走镜像：
+
+```powershell
+$env:AUTOKARA_MIRROR = "cn"
+& "$env:LOCALAPPDATA\Programs\autoKara\setup_env.bat"
+```
+
+会切清华 + 阿里云 PyPI 镜像、HF-mirror。
+
+从源码运行：
 
 ```bash
 # PyTorch（按 CUDA 版本选择）
@@ -26,7 +40,7 @@ pip install -r requirements.txt
 
 ## 使用
 
-### GUI
+### GUI（推荐，启动时会做依赖健康检查）
 
 ```bash
 python launcher.py
@@ -79,6 +93,19 @@ python main.py -i input/ -o output/
 ```
 
 左侧为表面字形，右侧为平假名读音，优先级高于 SudachiPy 输出。
+
+
+## 文件位置
+
+| | |
+|---|---|
+| 应用目录 | `%LOCALAPPDATA%\Programs\autoKara\` |
+| 自定义读音 | `应用目录\readings.txt` |
+| 用户偏好 | `%LOCALAPPDATA%\autoKara\settings.json` |
+| 每次运行日志 | `%LOCALAPPDATA%\autoKara\logs\` |
+| MMS-FA 模型缓存 | `~\.cache\torch\hub\checkpoints\model.pt`（约 1.26 GB）|
+| nltk 词典 | `%APPDATA%\nltk_data\` |
+
 
 ## 目录结构
 
