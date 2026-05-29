@@ -1340,6 +1340,12 @@ def doctor():
     print(f"torch        : {torch_v}    cuda_build={cuda_ver}    available={cuda_ok}")
     print(f"GPU          : {gpu_name}")
     print(f"torchaudio   : {ta_v}")
+    try:
+        import importlib.util as _u
+        _tc = "installed" if _u.find_spec('torchcodec') else "not installed"
+    except Exception:
+        _tc = "unknown"
+    print(f"torchcodec   : {_tc}  (非必需 / not required —— 音频读写已用 soundfile/librosa)")
     print(f"MMS-FA model : {mms_path}  ({mms_size})")
     print(f"SudachiDict  : core={v('SudachiDict-core')}    full={v('SudachiDict-full')}")
     print(f"SudachiPy    : {v('SudachiPy')}")
