@@ -664,7 +664,7 @@ class KaraokeApp:
         self.log_text.delete(1.0, tk.END)
         self.log_text.config(state=tk.DISABLED)
 
-        need_annotate = self.auto_furi.get() and not self._has_furigana(self.lyrics_text)
+        need_annotate = self.auto_furi.get()  # 逐行判断，已标注的行跳过，未标注的自动补
 
         if need_annotate:
             # 阶段1：自动注音 → 弹窗预览

@@ -1274,14 +1274,14 @@ Comment: 0,0:00:00.00,0:00:00.00,K1,music,0,0,0,template fx no_k,!retime("line",
 def has_furigana(text):
     return bool(re.search(r'\{[^}]+\|[^}]+\}', text))
 
-def auto_annotate(text):
+def auto_annotate(text, force=False):
     lines = text.strip().split('\n')
     result = []
     for line in lines:
         line = line.strip()
         if not line:
             continue
-        if has_furigana(line):
+        if not force and has_furigana(line):
             result.append(line)
         else:
             result.append(add_furigana(line))
@@ -1409,8 +1409,18 @@ def main():
     with open(input_text, 'r', encoding='utf-8') as f:
         raw_text = f.read()
 
-    if args.raw or not has_furigana(raw_text):
-        print("检测到原始歌词，正在自动注音...")
+    # 自动注音（逐行判断，已标注的行跳过，未标注的自动补）
+    if args.raw:
+        print("强制重新注音...")
+        annotated = auto_annotate(raw_text, force=True)
+        tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
+        tmp.write(annotated)
+        tmp.close()
+        input_text = tmp.name
+        print("注音完成")
+    elif has_furigana(raw_text):
+        # 部分行已标注 → 只补未标注的行
+        print("检测到部分注音，正在补全...")
         annotated = auto_annotate(raw_text)
         tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8')
         tmp.write(annotated)
