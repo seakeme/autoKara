@@ -411,8 +411,8 @@ class KaraokeApp:
         """歌词输入弹窗"""
         popup = self._make_popup("输入歌词", 720, 600)
 
-        tk.Label(popup, text="请粘贴日文歌词（每行一句）：",
-                 font=FONT_LABEL, bg=BG_MAIN, fg=TEXT_DARK).pack(anchor=tk.W, padx=14, pady=(12, 4))
+        tk.Label(popup, text="请粘贴日文歌词（每行一句）。\n汉字可用「{漢字|よみ}」标记，也可用「夜空（そら）」指定人为读音。",
+                 font=FONT_LABEL, bg=BG_MAIN, fg=TEXT_DARK, justify=tk.LEFT).pack(anchor=tk.W, padx=14, pady=(12, 4))
 
         text_frame = tk.Frame(popup, bg=BG_CARD, highlightbackground=CARD_BORDER,
                               highlightthickness=1)
@@ -484,8 +484,8 @@ class KaraokeApp:
         """注音预览弹窗（模态）—— 用户检查编辑后确认"""
         popup = self._make_popup("注音预览 - 请检查并修改", 680, 550)
 
-        tk.Label(popup, text="请检查注音结果，可直接编辑修改，确认后继续对齐：",
-                 font=FONT_LABEL, bg=BG_MAIN, fg=TEXT_DARK).pack(anchor=tk.W, padx=14, pady=(12, 4))
+        tk.Label(popup, text="请检查注音结果，可直接编辑修改。\n人或读音如「夜空（そら）」会自动转为「{夜空|そら}」。确认后继续对齐：",
+                 font=FONT_LABEL, bg=BG_MAIN, fg=TEXT_DARK, justify=tk.LEFT).pack(anchor=tk.W, padx=14, pady=(12, 4))
 
         text_frame = tk.Frame(popup, bg=BG_CARD, highlightbackground=CARD_BORDER,
                               highlightthickness=1)

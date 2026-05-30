@@ -1,4 +1,5 @@
 import os
+import re
 from sudachipy import Dictionary, SplitMode
 
 _tokenizer = None
@@ -85,8 +86,40 @@ def _split_single_block(surface, hira):
     return lead + "{" + kanji + "|" + kr + "}" + trail
 
 def add_furigana(text):
-    tokenizer_obj = _get_tokenizer()
+    # ---- 预处理：将 漢字（よみ）转为 {漢字|よみ} ----
+    # 仅匹配紧邻括号的纯汉字序列；含假名时不延长匹配，形成自然边界
+    # 支持全角括号「（）」和半角括号「()」
+    text = re.sub(
+        r'([一-鿿々]+)（([぀-ゟ]+)）',
+        r'{\1|\2}', text
+    )
+    text = re.sub(
+        r'([一-鿿々]+)\(([぀-ゟ]+)\)',
+        r'{\1|\2}', text
+    )
+
+    # ---- 将文本拆为 {…|…} 已注音段 与 纯文本段 ----
+    segments = re.split(r'(\{[^}]+\|[^}]+\})', text)
+    if all(not s.strip() for s in segments):
+        return text  # 空行原样返回
+
     result = []
+    for segment in segments:
+        if re.match(r'^\{[^}]+\|[^}]+\}$', segment):
+            # 已是注音格式，直接保留
+            result.append(segment)
+        elif segment.strip():
+            result.append(_furigana_segment(segment))
+        else:
+            result.append(segment)
+
+    return ''.join(result)
+
+
+def _furigana_segment(text):
+    """对不含 {…|…} 注音标记的纯文本调用 SudachiPy 自动注音。"""
+    tokenizer_obj = _get_tokenizer()
+    seg_result = []
 
     for token in tokenizer_obj.tokenize(text, SPLIT_MODE):
         surface = token.surface()
@@ -100,20 +133,20 @@ def add_furigana(text):
         if reading == surface:
             if any(is_katakana(c) for c in surface):
                 hira = katakana_to_hiragana(surface)
-                result.append(f"{{{surface}|{hira}}}")
+                seg_result.append(f"{{{surface}|{hira}}}")
             else:
-                result.append(surface)
+                seg_result.append(surface)
             continue
 
         # 纯假名直接保留
         if surface == hira:
-            result.append(surface)
+            seg_result.append(surface)
             continue
 
         # 单汉字块优先用双向锚定切分（修正 歌う→う 之类的尾送假名错位）
         _be = _split_single_block(surface, hira)
         if _be is not None:
-            result.append(_be)
+            seg_result.append(_be)
             continue
 
         # 逐字处理：假名在读音中按序一一匹配，汉字取中间的剩余读音
@@ -141,9 +174,9 @@ def add_furigana(text):
             kanji_reading = hira[reading_pos:]
             token_parts.append(f"{{{kanji_buf}|{kanji_reading}}}")
 
-        result.append(''.join(token_parts))
+        seg_result.append(''.join(token_parts))
 
-    return ''.join(result)
+    return ''.join(seg_result)
 
 # ===================== 测试 =====================
 if __name__ == '__main__':
