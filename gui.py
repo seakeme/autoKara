@@ -482,7 +482,7 @@ class KaraokeApp:
 
     def _open_furigana_popup(self, annotated_text):
         """注音预览弹窗（模态）—— 用户检查编辑后确认"""
-        popup = self._make_popup("注音预览 - 请检查并修改", 680, 550)
+        popup = self._make_popup("注音预览 - 请检查并修改", 680, 600)
 
         tk.Label(popup, text="请检查注音结果，可直接编辑修改。\n人或读音如「夜空（そら）」会自动转为「{夜空|そら}」。确认后继续对齐：",
                  font=FONT_LABEL, bg=BG_MAIN, fg=TEXT_DARK, justify=tk.LEFT).pack(anchor=tk.W, padx=14, pady=(12, 4))
