@@ -22,7 +22,10 @@ if exist "app.ico" (
     echo [1/2] app.ico already exists, skipping icon generation.
 ) else (
     echo [1/2] Generating app.ico from ..\knm.png ...
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Add-Type -AssemblyName System.Drawing; $img=[System.Drawing.Image]::FromFile((Resolve-Path '..\knm.png')); $bmp=New-Object System.Drawing.Bitmap($img,64,64); $h=$bmp.GetHicon(); $ico=[System.Drawing.Icon]::FromHandle($h); $fs=[System.IO.File]::Open((Join-Path (Get-Location) 'app.ico'),'Create'); $ico.Save($fs); $fs.Close(); $bmp.Dispose(); $img.Dispose(); Write-Host '      icon ok' } catch { Write-Host ('      skipped: ' + $_.Exception.Message) }"
+    powershell -NoProfile -ExecutionPolicy Bypass -File "generate_icon.ps1"
+    if errorlevel 1 (
+        echo [WARN] Icon generation failed, continuing without icon.
+    )
 )
 
 REM ---------- Locate ISCC.exe (Inno Setup 7 / 6 / 5, both Program Files dirs) ----------
